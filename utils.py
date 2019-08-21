@@ -64,13 +64,18 @@ def draw_boxes(image, boxes, labels):
         xmax = int(box.xmax*image_w)
         ymax = int(box.ymax*image_h)
 
-        cv2.rectangle(image, (xmin,ymin), (xmax,ymax), (0,255,0), 3)
+        if box.get_label() == 0:
+            color = (0,255,0)
+        else:
+            color = (0,0,255)
+
+        cv2.rectangle(image, (xmin,ymin), (xmax,ymax), color, 1)
         cv2.putText(image, 
                     labels[box.get_label()] + ' ' + str(box.get_score()), 
                     (xmin, ymin - 13), 
                     cv2.FONT_HERSHEY_SIMPLEX, 
                     1e-3 * image_h, 
-                    (0,255,0), 2)
+                    color, 1)
         
     return image          
         
@@ -122,6 +127,11 @@ def decode_netout(netout, anchors, nb_class, obj_threshold=0.3, nms_threshold=0.
                         
     # remove the boxes which are less likely than a obj_threshold
     boxes = [box for box in boxes if box.get_score() > obj_threshold]
+    
+    # Only return 2 boxes
+    box_scores = [box.get_score() for box in boxes]
+    box_indices = np.argsort(box_scores)[-2:]
+    boxes = np.array(boxes)[box_indices].tolist()
     
     return boxes    
 

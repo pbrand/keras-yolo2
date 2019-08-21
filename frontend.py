@@ -12,6 +12,7 @@ from keras.optimizers import SGD, Adam, RMSprop
 from preprocessing import BatchGenerator
 from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
 from backend import TinyYoloFeature, FullYoloFeature, MobileNetFeature, SqueezeNetFeature, Inception3Feature, VGG16Feature, ResNet50Feature
+from functools import partial
 
 class YOLO(object):
     def __init__(self, backend,
@@ -218,27 +219,103 @@ class YOLO(object):
         loss_class = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=true_box_class, logits=pred_box_class)
         loss_class = tf.reduce_sum(loss_class * class_mask) / (nb_class_box + 1e-6)
         
-        loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
-                      lambda: loss_xy + loss_wh + loss_conf + loss_class + 10,
-                      lambda: loss_xy + loss_wh + loss_conf + loss_class)
+        # Full tensor, tensor with predicted xy, wh and groundtruth box classes
+        class_tensor = tf.expand_dims(tf.to_float(true_box_class), axis=-1)
+        full_tensor = tf.concat([pred_box_xy, pred_box_wh, class_tensor], axis=-1)
+        bin_mask = y_true[..., 4]
+        annotation_loss = tf.map_fn(fn=lambda x: self.anatomical_loss(full_tensor, bin_mask, x),
+                                    elems=tf.range(tf.shape(full_tensor)[0]),
+                                    infer_shape=False,
+                                    dtype=tf.float32, name='Analytical_Loss_per_batch')
+        annotation_loss = tf.reduce_sum(annotation_loss) * 2 * self.coord_scale
+#        annotation_loss = self.anatomical_loss(full_tensor, bin_mask, 0)
         
+        loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
+                      lambda: loss_xy + loss_wh + loss_conf + loss_class + 10 + annotation_loss,
+                      lambda: loss_xy + loss_wh + loss_conf + loss_class + annotation_loss) 
+               
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
             nb_pred_box = tf.reduce_sum(tf.to_float(true_box_conf > 0.5) * tf.to_float(pred_box_conf > 0.3))
             
-            current_recall = nb_pred_box/(nb_true_box + 1e-6)
-            total_recall = tf.assign_add(total_recall, current_recall) 
+#             current_recall = nb_pred_box/(nb_true_box + 1e-6)
+#             total_recall = tf.assign_add(total_recall, current_recall) 
+            
+            loss = tf.Print(loss, [tf.reduce_sum(y_true[..., 4]), annotation_loss], message='Annotation loss:', summarize=20)  
+#             loss = tf.Print(loss, [nb_true_box, nb_pred_box], message='True boxes / Pred boxes', summarize=10)
 
-            loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
-            loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
-            loss = tf.Print(loss, [loss_conf], message='Loss Conf \t', summarize=1000)
-            loss = tf.Print(loss, [loss_class], message='Loss Class \t', summarize=1000)
-            loss = tf.Print(loss, [loss], message='Total Loss \t', summarize=1000)
-            loss = tf.Print(loss, [current_recall], message='Current Recall \t', summarize=1000)
-            loss = tf.Print(loss, [total_recall/seen], message='Average Recall \t', summarize=1000)
+#             loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
+#             loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
+#             loss = tf.Print(loss, [loss_conf], message='Loss Conf \t', summarize=1000)
+#             loss = tf.Print(loss, [loss_class], message='Loss Class \t', summarize=1000)
+#             loss = tf.Print(loss, [loss], message='Total Loss \t', summarize=1000)
+#             loss = tf.Print(loss, [current_recall], message='Current Recall \t', summarize=1000)
+#             loss = tf.Print(loss, [total_recall/seen], message='Average Recall \t', summarize=1000)
         
         return loss
 
+    def anatomical_loss(self, full_tensor, bin_mask, batch_nr):
+        def inner_function(elements):
+            pz, prostate = tf.cond(tf.equal(tf.to_int32(elements[0,...,-1]), 0),
+                                   lambda: (elements[0], elements[1]),
+                                   lambda: (elements[1], elements[0]), name='Split_PZ_Prostate')           
+            # Calculate anatomical loss
+            anatomical_loss = tf.Variable(0, dtype=tf.float32)
+        
+            pz_y_max = pz[1] + (pz[3] / 2)
+            prostate_y_max = prostate[1] + (prostate[3] / 2)
+            y_max_loss = tf.square(tf.reduce_sum(pz_y_max - prostate_y_max)) 
+
+            anatomical_loss = tf.add(anatomical_loss, y_max_loss)
+            
+            pz_y_min = pz[1] - (pz[3] / 2)
+            prostate_y_min = prostate[1] - (prostate[3] / 2)
+            y_min_loss = tf.square(tf.reduce_sum(pz_y_min - prostate_y_min))
+            anatomical_loss = tf.cond(tf.less(pz_y_min, prostate_y_min),
+                              lambda: tf.add(anatomical_loss, y_min_loss),
+                              lambda: anatomical_loss, 
+                              name='Min_y_loss')
+
+            pz_x_min = pz[0] - (pz[2] / 2)
+            prostate_x_min = prostate[0] - (prostate[2] / 2)
+            x_min_loss = tf.square(tf.reduce_sum(pz_x_min - prostate_x_min))
+            anatomical_loss = tf.cond(tf.less(pz_x_min, prostate_x_min),
+                              lambda: tf.add(anatomical_loss, x_min_loss),
+                              lambda: anatomical_loss, 
+                              name='Min_x_loss')
+
+            pz_x_max = pz[0] + (pz[2] / 2)
+            prostate_x_max = prostate[0] + (prostate[2] / 2)
+            x_max_loss =  tf.square(tf.reduce_sum(pz_x_max - prostate_x_max))
+            anatomical_loss = tf.cond(tf.greater(pz_x_max, prostate_x_max),
+                              lambda: tf.add(anatomical_loss, x_max_loss),
+                              lambda: anatomical_loss, 
+                              name='Max_x_loss')
+            
+#             anatomical_loss = tf.Print(anatomical_loss, [anatomical_loss, y_max_loss, y_min_loss,
+#                                                          x_max_loss, x_min_loss], 
+#                                        message='Debug anatomical loss terms \t', summarize=30)
+
+            return anatomical_loss
+        
+        # Gather the elements: PZ and Prostate if present in ground truth
+        current_mask = tf.where(bin_mask[batch_nr] > 0)
+        elements = tf.gather_nd(full_tensor[batch_nr,...], current_mask)
+        
+#         elements = tf.Print(elements, [elements, tf.shape(elements)], message='Elements \t', summarize=10)
+        
+#         result = tf.cond(tf.equal(tf.shape(elements)[0], 2),
+#                          lambda: inner_function(elements),
+#                          lambda: tf.zeros(1, dtype=tf.float32), name='Analytical_Loss_per_sample')
+        result = inner_function(elements)
+    
+#         result = tf.Print(result, [batch_nr, result], 
+#                                message='Debug result with dtype='+str(result.dtype)+' for batch_nr ', summarize=30)
+
+        return result
+        
+
+    
     def load_weights(self, weight_path):
         self.model.load_weights(weight_path)
 
@@ -304,11 +381,11 @@ class YOLO(object):
         # Make a few callbacks
         ############################################
 
-        early_stop = EarlyStopping(monitor='val_loss', 
-                           min_delta=0.001, 
-                           patience=3, 
-                           mode='min', 
-                           verbose=1)
+        #early_stop = EarlyStopping(monitor='val_loss', 
+                           #min_delta=0.001, 
+                           #patience=3, 
+                           #mode='min', 
+                           #verbose=1)
         checkpoint = ModelCheckpoint(saved_weights_name, 
                                      monitor='val_loss', 
                                      verbose=1, 
@@ -331,7 +408,8 @@ class YOLO(object):
                                  verbose          = 2 if debug else 1,
                                  validation_data  = valid_generator,
                                  validation_steps = len(valid_generator) * valid_times,
-                                 callbacks        = [early_stop, checkpoint, tensorboard], 
+                                 callbacks        = [#early_stop, 
+                                                     checkpoint, tensorboard], 
                                  workers          = 3,
                                  max_queue_size   = 8)      
 
@@ -459,6 +537,7 @@ class YOLO(object):
         return average_precisions    
 
     def predict(self, image):
+        self.max_box_per_image = 2
         image_h, image_w, _ = image.shape
         image = cv2.resize(image, (self.input_size, self.input_size))
         image = self.feature_extractor.normalize(image)
@@ -468,6 +547,6 @@ class YOLO(object):
         dummy_array = np.zeros((1,1,1,1,self.max_box_per_image,4))
 
         netout = self.model.predict([input_image, dummy_array])[0]
-        boxes  = decode_netout(netout, self.anchors, self.nb_class)
+        boxes  = decode_netout(netout, self.anchors, self.nb_class, obj_threshold=0.05, nms_threshold=0.5)
 
         return boxes

@@ -83,13 +83,17 @@ def _main_(args):
         video_reader.release()
         video_writer.release()  
     else:
-        image = cv2.imread(image_path)
-        boxes = yolo.predict(image)
-        image = draw_boxes(image, boxes, config['model']['labels'])
+        for im_path in os.listdir(image_path):
+            im_path = os.path.join(image_path, im_path)
+            image = cv2.imread(im_path)
+            if len(image.shape) == 2:
+                image = cv2.cvtColor(image,cv2.COLOR_GRAY2RGB)
+            boxes = yolo.predict(image)
+            image = draw_boxes(image, boxes, config['model']['labels'])
 
-        print(len(boxes), 'boxes are found')
+            print(len(boxes), 'boxes are found')
 
-        cv2.imwrite(image_path[:-4] + '_detected' + image_path[-4:], image)
+            cv2.imwrite(im_path[:-5] + '_detected' + im_path[-5:], image)
 
 if __name__ == '__main__':
     args = argparser.parse_args()

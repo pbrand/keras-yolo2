@@ -17,6 +17,8 @@ def parse_annotation(ann_dir, img_dir, labels=[]):
 
         tree = ET.parse(ann_dir + ann)
         
+#         print(ann)
+        
         for elem in tree.iter():
             if 'filename' in elem.tag:
                 img['filename'] = img_dir + elem.text
@@ -30,6 +32,8 @@ def parse_annotation(ann_dir, img_dir, labels=[]):
                 for attr in list(elem):
                     if 'name' in attr.tag:
                         obj['name'] = attr.text
+                        
+#                         print('\t\t'+obj['name'])
 
                         if obj['name'] in seen_labels:
                             seen_labels[obj['name']] += 1
@@ -69,7 +73,7 @@ class BatchGenerator(Sequence):
         self.config = config
 
         self.shuffle = shuffle
-        self.jitter  = jitter
+        self.jitter  = False
         self.norm    = norm
 
         self.anchors = [BoundBox(0, 0, config['ANCHORS'][2*i], config['ANCHORS'][2*i+1]) for i in range(int(len(config['ANCHORS'])//2))]
@@ -155,7 +159,10 @@ class BatchGenerator(Sequence):
         return np.array(annots)
 
     def load_image(self, i):
-        return cv2.imread(self.images[i]['filename'])
+        image = cv2.imread(self.images[i]['filename'],0)
+        if len(image.shape) == 2:
+            image = cv2.cvtColor(image,cv2.COLOR_GRAY2RGB)
+        return image
 
     def __getitem__(self, idx):
         l_bound = idx*self.config['BATCH_SIZE']
@@ -171,7 +178,10 @@ class BatchGenerator(Sequence):
         b_batch = np.zeros((r_bound - l_bound, 1     , 1     , 1    ,  self.config['TRUE_BOX_BUFFER'], 4))   # list of self.config['TRUE_self.config['BOX']_BUFFER'] GT boxes
         y_batch = np.zeros((r_bound - l_bound, self.config['GRID_H'],  self.config['GRID_W'], self.config['BOX'], 4+1+len(self.config['LABELS'])))                # desired network output
 
+#         place = 0
         for train_instance in self.images[l_bound:r_bound]:
+#             print(place)
+#             place += 1
             # augment input image and fix object's position and size
             img, all_objs = self.aug_image(train_instance, jitter=self.jitter)
             
@@ -179,6 +189,7 @@ class BatchGenerator(Sequence):
             true_box_index = 0
             
             for obj in all_objs:
+#                 print('\t'+str(obj))
                 if obj['xmax'] > obj['xmin'] and obj['ymax'] > obj['ymin'] and obj['name'] in self.config['LABELS']:
                     center_x = .5*(obj['xmin'] + obj['xmax'])
                     center_x = center_x / (float(self.config['IMAGE_W']) / self.config['GRID_W'])
@@ -209,7 +220,7 @@ class BatchGenerator(Sequence):
                             anchor = self.anchors[i]
                             iou    = bbox_iou(shifted_box, anchor)
                             
-                            if max_iou < iou:
+                            if max_iou < iou and y_batch[instance_count, grid_y, grid_x, i, 4  ] != 1.:
                                 best_anchor = i
                                 max_iou     = iou
                                 
@@ -223,6 +234,9 @@ class BatchGenerator(Sequence):
                         
                         true_box_index += 1
                         true_box_index = true_box_index % self.config['TRUE_BOX_BUFFER']
+#                         print('\t\tAdded object: '+obj['name'])
+            
+#             print('Loaded number of objects: ' + str(np.sum(y_batch[...,4])))
                             
             # assign input image to x_batch
             if self.norm != None: 
