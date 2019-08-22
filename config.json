@@ -13,12 +13,12 @@
           
         "train_times":          1,
         "pretrained_weights":   "I_dont_want_pretrained_weights",
-        "batch_size":           8,
+        "batch_size":           16,
         "learning_rate":        1e-4,
-        "nb_epochs":            60,
+        "nb_epochs":            150,
         "warmup_epochs":        3,
 
-        "object_scale":         5.0,
+        "object_scale":         10.0,
         "no_object_scale":      1.0,
         "coord_scale":          1.0,
         "class_scale":          1.0,
