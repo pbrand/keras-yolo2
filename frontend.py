@@ -474,6 +474,6 @@ class YOLO(object):
         dummy_array = np.zeros((1,1,1,1,self.max_box_per_image,4))
 
         netout = self.model.predict([input_image, dummy_array])[0]
-        boxes  = decode_netout(netout, self.anchors, self.nb_class, obj_threshold=0.05, nms_threshold=0.5)
+        boxes  = decode_netout(netout, self.anchors, self.nb_class, obj_threshold=0.5, nms_threshold=0.5)
 
         return boxes
