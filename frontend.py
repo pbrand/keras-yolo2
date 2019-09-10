@@ -84,10 +84,19 @@ class YOLO(object):
         # print a summary of the whole model
         self.model.summary()
 
+    def huber_loss(self, y_true, y_pred, clip_delta=1.0):
+        error = y_true - y_pred
+        cond  = tf.abs(error) < clip_delta
+
+        squared_loss = 0.5 * tf.square(error)
+        linear_loss  = clip_delta * (tf.abs(error) - 0.5 * clip_delta)
+
+        return tf.where(cond, squared_loss, linear_loss)
+        
     def custom_loss(self, y_true, y_pred):
         mask_shape = tf.shape(y_true)[:4]
         
-        cell_x = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)))
+        cell_x = tf.cast(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)), dtype=tf.float32)
         cell_y = tf.transpose(cell_x, (0,2,1,3,4))
 
         cell_grid = tf.tile(tf.concat([cell_x,cell_y], -1), [self.batch_size, 1, 1, self.nb_box, 1])
@@ -182,7 +191,7 @@ class YOLO(object):
         iou_scores  = tf.truediv(intersect_areas, union_areas)
 
         best_ious = tf.reduce_max(iou_scores, axis=4)
-        conf_mask = conf_mask + tf.to_float(best_ious < 0.6) * (1 - y_true[..., 4]) * self.no_object_scale
+        conf_mask = conf_mask + tf.cast(best_ious < 0.6, dtype=tf.float32) * (1 - y_true[..., 4]) * self.no_object_scale
         
         # penalize the confidence of the boxes, which are reponsible for corresponding ground truth box
         conf_mask = conf_mask + y_true[..., 4] * self.object_scale
@@ -193,7 +202,7 @@ class YOLO(object):
         """
         Warm-up training
         """
-        no_boxes_mask = tf.to_float(coord_mask < self.coord_scale/2.)
+        no_boxes_mask = tf.cast(coord_mask < self.coord_scale/2., dtype=tf.float32)
         seen = tf.assign_add(seen, 1.)
         
         true_box_xy, true_box_wh, coord_mask = tf.cond(tf.less(seen, self.warmup_batches+1), 
@@ -209,26 +218,26 @@ class YOLO(object):
         """
         Finalize the loss
         """
-        nb_coord_box = tf.reduce_sum(tf.to_float(coord_mask > 0.0))
-        nb_conf_box  = tf.reduce_sum(tf.to_float(conf_mask  > 0.0))
-        nb_class_box = tf.reduce_sum(tf.to_float(class_mask > 0.0))
+        nb_coord_box = tf.reduce_sum(tf.cast(coord_mask > 0.0, dtype=tf.float32))
+        nb_conf_box  = tf.reduce_sum(tf.cast(conf_mask  > 0.0, dtype=tf.float32))
+        nb_class_box = tf.reduce_sum(tf.cast(class_mask > 0.0, dtype=tf.float32))
         
-        loss_xy    = tf.reduce_sum(tf.square(true_box_xy-pred_box_xy)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
-        loss_wh    = tf.reduce_sum(tf.square(true_box_wh-pred_box_wh)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
-        loss_conf  = tf.reduce_sum(tf.square(true_box_conf-pred_box_conf) * conf_mask)  / (nb_conf_box  + 1e-6) / 2.
+        loss_xy    = tf.reduce_sum(self.huber_loss(true_box_xy, pred_box_xy)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
+        loss_wh    = tf.reduce_sum(self.huber_loss(true_box_wh, pred_box_wh)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
+        loss_conf  = tf.reduce_sum(self.huber_loss(true_box_conf, pred_box_conf) * conf_mask)  / (nb_conf_box  + 1e-6) / 2.
         loss_class = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=true_box_class, logits=pred_box_class)
         loss_class = tf.reduce_sum(loss_class * class_mask) / (nb_class_box + 1e-6)
         
         # Full tensor, tensor with predicted xy, wh and groundtruth box classes
-        class_tensor = tf.expand_dims(tf.to_float(true_box_class), axis=-1)
+        class_tensor = tf.expand_dims(tf.cast(true_box_class, dtype=tf.float32), axis=-1)
         full_tensor = tf.concat([pred_box_xy, pred_box_wh, class_tensor], axis=-1)
         bin_mask = y_true[..., 4]
         annotation_loss = tf.map_fn(fn=lambda x: self.anatomical_loss(full_tensor, bin_mask, x),
                                     elems=tf.range(tf.shape(full_tensor)[0]),
                                     infer_shape=False,
                                     dtype=tf.float32, name='Analytical_Loss_per_batch')
-        annotation_loss = tf.reduce_sum(annotation_loss) * 2 * self.coord_scale
-#        annotation_loss = self.anatomical_loss(full_tensor, bin_mask, 0)
+        annotation_loss = tf.reduce_sum(annotation_loss) * 5 * self.coord_scale
+#        annotation_loss = self.anatomical_loss(full_tensor, bin_mask, 0)      
         
         loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
                       lambda: loss_xy + loss_wh + loss_conf + loss_class + 10 + annotation_loss,
@@ -236,12 +245,12 @@ class YOLO(object):
                
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
-            nb_pred_box = tf.reduce_sum(tf.to_float(true_box_conf > 0.5) * tf.to_float(pred_box_conf > 0.3))
+            nb_pred_box = tf.reduce_sum(tf.cast(true_box_conf > 0.5, dtype=tf.float32) * tf.cast(pred_box_conf > 0.3, dtype=tf.float32))
             
 #             current_recall = nb_pred_box/(nb_true_box + 1e-6)
 #             total_recall = tf.assign_add(total_recall, current_recall) 
             
-            loss = tf.Print(loss, [tf.reduce_sum(y_true[..., 4]), annotation_loss], message='Annotation loss:', summarize=20)  
+            #loss = tf.Print(loss, [var_grad], message='Annotation loss gradient:', summarize=20)  
 #             loss = tf.Print(loss, [nb_true_box, nb_pred_box], message='True boxes / Pred boxes', summarize=10)
 
 #             loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
@@ -256,7 +265,7 @@ class YOLO(object):
 
     def anatomical_loss(self, full_tensor, bin_mask, batch_nr):
         def inner_function(elements):
-            pz, prostate = tf.cond(tf.equal(tf.to_int32(elements[0,...,-1]), 0),
+            pz, prostate = tf.cond(tf.equal(tf.cast(elements[0,...,-1], dtype=tf.int32), 0),
                                    lambda: (elements[0], elements[1]),
                                    lambda: (elements[1], elements[0]), name='Split_PZ_Prostate')           
             # Calculate anatomical loss
@@ -264,13 +273,13 @@ class YOLO(object):
         
             pz_y_max = pz[1] + (pz[3] / 2)
             prostate_y_max = prostate[1] + (prostate[3] / 2)
-            y_max_loss = tf.square(tf.reduce_sum(pz_y_max - prostate_y_max)) 
+            y_max_loss = tf.reduce_sum(tf.square(pz_y_max - prostate_y_max)) 
 
             anatomical_loss = tf.add(anatomical_loss, y_max_loss)
             
             pz_y_min = pz[1] - (pz[3] / 2)
             prostate_y_min = prostate[1] - (prostate[3] / 2)
-            y_min_loss = tf.square(tf.reduce_sum(pz_y_min - prostate_y_min))
+            y_min_loss = tf.reduce_sum(self.huber_loss(pz_y_min, prostate_y_min))
             anatomical_loss = tf.cond(tf.less(pz_y_min, prostate_y_min),
                               lambda: tf.add(anatomical_loss, y_min_loss),
                               lambda: anatomical_loss, 
@@ -278,7 +287,7 @@ class YOLO(object):
 
             pz_x_min = pz[0] - (pz[2] / 2)
             prostate_x_min = prostate[0] - (prostate[2] / 2)
-            x_min_loss = tf.square(tf.reduce_sum(pz_x_min - prostate_x_min))
+            x_min_loss = tf.reduce_sum(self.huber_loss(pz_x_min, prostate_x_min))
             anatomical_loss = tf.cond(tf.less(pz_x_min, prostate_x_min),
                               lambda: tf.add(anatomical_loss, x_min_loss),
                               lambda: anatomical_loss, 
@@ -286,7 +295,7 @@ class YOLO(object):
 
             pz_x_max = pz[0] + (pz[2] / 2)
             prostate_x_max = prostate[0] + (prostate[2] / 2)
-            x_max_loss =  tf.square(tf.reduce_sum(pz_x_max - prostate_x_max))
+            x_max_loss =  tf.reduce_sum(self.huber_loss(pz_x_max, prostate_x_max))
             anatomical_loss = tf.cond(tf.greater(pz_x_max, prostate_x_max),
                               lambda: tf.add(anatomical_loss, x_max_loss),
                               lambda: anatomical_loss, 
