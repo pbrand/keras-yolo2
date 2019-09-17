@@ -10,7 +10,7 @@ from keras.applications.mobilenet import MobileNet
 from keras.layers.merge import concatenate
 from keras.optimizers import SGD, Adam, RMSprop
 from preprocessing import BatchGenerator
-from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
+from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard, LearningRateScheduler
 from backend import TinyYoloFeature, FullYoloFeature, MobileNetFeature, SqueezeNetFeature, Inception3Feature, VGG16Feature, ResNet50Feature
 from functools import partial
 
@@ -236,7 +236,7 @@ class YOLO(object):
                                     elems=tf.range(tf.shape(full_tensor)[0]),
                                     infer_shape=False,
                                     dtype=tf.float32, name='Analytical_Loss_per_batch')
-        annotation_loss = tf.reduce_sum(annotation_loss) * 5 * self.coord_scale
+        annotation_loss = tf.reduce_sum(annotation_loss) / (nb_coord_box + 1e-6) / 2.  #* 5 * self.coord_scale
 #        annotation_loss = self.anatomical_loss(full_tensor, bin_mask, 0)      
         
         loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
@@ -383,7 +383,8 @@ class YOLO(object):
         # Compile the model
         ############################################
 
-        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+        optimizer = SGD(lr=learning_rate, moments=0.9, decay=0.0005, nesterov=True)
+        #Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
         self.model.compile(loss=self.custom_loss, optimizer=optimizer)
 
         ############################################
@@ -407,6 +408,14 @@ class YOLO(object):
                                   write_graph=True, 
                                   write_images=False)
 
+        def schedule_lr(x):
+            if x >= 90:
+                return 1e-5
+            if x >= 60:
+                return 1e-4
+            return 1e-3
+        
+        lr_scheduler = LearningRateScheduler(schedule_lr)
         ############################################
         # Start the training process
         ############################################        
@@ -418,7 +427,7 @@ class YOLO(object):
                                  validation_data  = valid_generator,
                                  validation_steps = len(valid_generator) * valid_times,
                                  callbacks        = [#early_stop, 
-                                                     checkpoint, tensorboard], 
+                                                     checkpoint, tensorboard, lr_scheduler], 
                                  workers          = 3,
                                  max_queue_size   = 8)      
 
