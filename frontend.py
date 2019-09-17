@@ -10,7 +10,7 @@ from keras.applications.mobilenet import MobileNet
 from keras.layers.merge import concatenate
 from keras.optimizers import SGD, Adam, RMSprop
 from preprocessing import BatchGenerator
-from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard
+from keras.callbacks import EarlyStopping, ModelCheckpoint, TensorBoard, LearningRateScheduler
 from backend import TinyYoloFeature, FullYoloFeature, MobileNetFeature, SqueezeNetFeature, Inception3Feature, VGG16Feature, ResNet50Feature
 from functools import partial
 
@@ -84,10 +84,19 @@ class YOLO(object):
         # print a summary of the whole model
         self.model.summary()
 
+    def huber_loss(self, y_true, y_pred, clip_delta=1.0):
+        error = y_true - y_pred
+        cond  = tf.abs(error) < clip_delta
+
+        squared_loss = 0.5 * tf.square(error)
+        linear_loss  = clip_delta * (tf.abs(error) - 0.5 * clip_delta)
+
+        return tf.where(cond, squared_loss, linear_loss)
+        
     def custom_loss(self, y_true, y_pred):
         mask_shape = tf.shape(y_true)[:4]
         
-        cell_x = tf.to_float(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)))
+        cell_x = tf.cast(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)), dtype=tf.float32)
         cell_y = tf.transpose(cell_x, (0,2,1,3,4))
 
         cell_grid = tf.tile(tf.concat([cell_x,cell_y], -1), [self.batch_size, 1, 1, self.nb_box, 1])
@@ -182,7 +191,7 @@ class YOLO(object):
         iou_scores  = tf.truediv(intersect_areas, union_areas)
 
         best_ious = tf.reduce_max(iou_scores, axis=4)
-        conf_mask = conf_mask + tf.to_float(best_ious < 0.6) * (1 - y_true[..., 4]) * self.no_object_scale
+        conf_mask = conf_mask + tf.cast(best_ious < 0.6, dtype=tf.float32) * (1 - y_true[..., 4]) * self.no_object_scale
         
         # penalize the confidence of the boxes, which are reponsible for corresponding ground truth box
         conf_mask = conf_mask + y_true[..., 4] * self.object_scale
@@ -193,7 +202,7 @@ class YOLO(object):
         """
         Warm-up training
         """
-        no_boxes_mask = tf.to_float(coord_mask < self.coord_scale/2.)
+        no_boxes_mask = tf.cast(coord_mask < self.coord_scale/2., dtype=tf.float32)
         seen = tf.assign_add(seen, 1.)
         
         true_box_xy, true_box_wh, coord_mask = tf.cond(tf.less(seen, self.warmup_batches+1), 
@@ -209,23 +218,35 @@ class YOLO(object):
         """
         Finalize the loss
         """
-        nb_coord_box = tf.reduce_sum(tf.to_float(coord_mask > 0.0))
-        nb_conf_box  = tf.reduce_sum(tf.to_float(conf_mask  > 0.0))
-        nb_class_box = tf.reduce_sum(tf.to_float(class_mask > 0.0))
-        
-        loss_xy    = tf.reduce_sum(tf.square(true_box_xy-pred_box_xy)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
-        loss_wh    = tf.reduce_sum(tf.square(true_box_wh-pred_box_wh)     * coord_mask) / (nb_coord_box + 1e-6) / 2.
-        loss_conf  = tf.reduce_sum(tf.square(true_box_conf-pred_box_conf) * conf_mask)  / (nb_conf_box  + 1e-6) / 2.
+        nb_coord_box = tf.reduce_sum(tf.cast(coord_mask > 0.0, dtype=tf.float32))
+        nb_conf_box  = tf.reduce_sum(tf.cast(conf_mask  > 0.0, dtype=tf.float32))
+        nb_class_box = tf.reduce_sum(tf.cast(class_mask > 0.0, dtype=tf.float32))
+       
+        batch_size = tf.cast(tf.shape(y_true)[0], dtype=tf.float32)
+
+        loss_xy    = tf.reduce_sum(tf.square(true_box_xy-pred_box_xy)     * coord_mask) / batch_size
+        loss_wh    = tf.reduce_sum(tf.square(true_box_wh-pred_box_wh)     * coord_mask) / batch_size
+        loss_conf  = tf.reduce_sum(tf.square(true_box_conf-pred_box_conf) * conf_mask)  / batch_size
         loss_class = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=true_box_class, logits=pred_box_class)
-        loss_class = tf.reduce_sum(loss_class * class_mask) / (nb_class_box + 1e-6)
-               
+        loss_class = tf.reduce_sum(loss_class * class_mask) / batch_size
+       
+        warmup_xy = loss_xy / (nb_coord_box + 1e-6) / 2. 
+        warmup_wh = loss_wh / (nb_coord_box  + 1e-6) / 2.
+        warmup_conf = loss_conf / (nb_conf_box + 1e-6) / 2.   
+        warmup_class = loss_class / (nb_class_box + 1e-6)
+    
+        # Full tensor, tensor with predicted xy, wh and groundtruth box classes
+        class_tensor = tf.expand_dims(tf.cast(true_box_class, dtype=tf.float32), axis=-1)
+        full_tensor = tf.concat([pred_box_xy, pred_box_wh, class_tensor], axis=-1)
+        bin_mask = y_true[..., 4]
+        
         loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
-                      lambda: loss_xy + loss_wh + loss_conf + loss_class + 10,
+                      lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 10,
                       lambda: loss_xy + loss_wh + loss_conf + loss_class) 
                
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
-            nb_pred_box = tf.reduce_sum(tf.to_float(true_box_conf > 0.5) * tf.to_float(pred_box_conf > 0.3))
+            nb_pred_box = tf.reduce_sum(tf.cast(true_box_conf > 0.5, dtype=tf.float32) * tf.cast(pred_box_conf > 0.3, dtype=tf.float32))
             
 #             current_recall = nb_pred_box/(nb_true_box + 1e-6)
 #             total_recall = tf.assign_add(total_recall, current_recall) 
@@ -301,7 +322,9 @@ class YOLO(object):
         # Compile the model
         ############################################
 
-        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
+        optimizer = Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0005)
+        #SGD(lr=learning_rate, momentum=0.9, decay=0.0005, nesterov=True)
+        #Adam(lr=learning_rate, beta_1=0.9, beta_2=0.999, epsilon=1e-08, decay=0.0)
         self.model.compile(loss=self.custom_loss, optimizer=optimizer)
 
         ############################################
@@ -325,6 +348,14 @@ class YOLO(object):
                                   write_graph=True, 
                                   write_images=False)
 
+        def schedule_lr(x):
+            if x >= 90:
+                return 1e-5
+            if x >= 60:
+                return 1e-4
+            return 0.5e-3
+        
+        lr_scheduler = LearningRateScheduler(schedule_lr)
         ############################################
         # Start the training process
         ############################################        
@@ -336,7 +367,7 @@ class YOLO(object):
                                  validation_data  = valid_generator,
                                  validation_steps = len(valid_generator) * valid_times,
                                  callbacks        = [#early_stop, 
-                                                     checkpoint, tensorboard], 
+                                                     checkpoint, tensorboard, lr_scheduler], 
                                  workers          = 3,
                                  max_queue_size   = 8)      
 
