@@ -16,13 +16,13 @@ from functools import partial
 
 class YOLO(object):
     def __init__(self, backend,
-                       input_size, 
-                       labels, 
+                       input_size,
+                       labels,
                        max_box_per_image,
                        anchors):
 
         self.input_size = input_size
-        
+
         self.labels   = list(labels)
         self.nb_class = len(self.labels)
         self.nb_box   = len(anchors)//2
@@ -37,12 +37,12 @@ class YOLO(object):
 
         # make the feature extractor layers
         input_image     = Input(shape=(self.input_size, self.input_size, 3))
-        self.true_boxes = Input(shape=(1, 1, 1, max_box_per_image , 4))  
+        self.true_boxes = Input(shape=(1, 1, 1, max_box_per_image , 4))
 
         if backend == 'Inception3':
-            self.feature_extractor = Inception3Feature(self.input_size)  
+            self.feature_extractor = Inception3Feature(self.input_size)
         elif backend == 'SqueezeNet':
-            self.feature_extractor = SqueezeNetFeature(self.input_size)        
+            self.feature_extractor = SqueezeNetFeature(self.input_size)
         elif backend == 'MobileNet':
             self.feature_extractor = MobileNetFeature(self.input_size)
         elif backend == 'Full Yolo':
@@ -56,22 +56,22 @@ class YOLO(object):
         else:
             raise Exception('Architecture not supported! Only support Full Yolo, Tiny Yolo, MobileNet, SqueezeNet, VGG16, ResNet50, and Inception3 at the moment!')
 
-        print(self.feature_extractor.get_output_shape())    
-        self.grid_h, self.grid_w = self.feature_extractor.get_output_shape()        
-        features = self.feature_extractor.extract(input_image)            
+        print(self.feature_extractor.get_output_shape())
+        self.grid_h, self.grid_w = self.feature_extractor.get_output_shape()
+        features = self.feature_extractor.extract(input_image)
 
         # make the object detection layer
-        output = Conv2D(self.nb_box * (4 + 1 + self.nb_class), 
-                        (1,1), strides=(1,1), 
-                        padding='same', 
-                        name='DetectionLayer', 
+        output = Conv2D(self.nb_box * (4 + 1 + self.nb_class),
+                        (1,1), strides=(1,1),
+                        padding='same',
+                        name='DetectionLayer',
                         kernel_initializer='lecun_normal')(features)
         output = Reshape((self.grid_h, self.grid_w, self.nb_box, 4 + 1 + self.nb_class))(output)
         output = Lambda(lambda args: args[0])([output, self.true_boxes])
 
         self.model = Model([input_image, self.true_boxes], output)
 
-        
+
         # initialize the weights of the detection layer
         layer = self.model.layers[-4]
         weights = layer.get_weights()
@@ -92,98 +92,98 @@ class YOLO(object):
         linear_loss  = clip_delta * (tf.abs(error) - 0.5 * clip_delta)
 
         return tf.where(cond, squared_loss, linear_loss)
-        
+
     def custom_loss(self, y_true, y_pred):
         mask_shape = tf.shape(y_true)[:4]
-        
+
         cell_x = tf.cast(tf.reshape(tf.tile(tf.range(self.grid_w), [self.grid_h]), (1, self.grid_h, self.grid_w, 1, 1)), dtype=tf.float32)
         cell_y = tf.transpose(cell_x, (0,2,1,3,4))
 
         cell_grid = tf.tile(tf.concat([cell_x,cell_y], -1), [self.batch_size, 1, 1, self.nb_box, 1])
-        
+
         coord_mask = tf.zeros(mask_shape)
         conf_mask  = tf.zeros(mask_shape)
         class_mask = tf.zeros(mask_shape)
-        
+
         seen = tf.Variable(0.)
         total_recall = tf.Variable(0.)
-        
+
         """
         Adjust prediction
         """
-        ### adjust x and y      
+        ### adjust x and y
         pred_box_xy = tf.sigmoid(y_pred[..., :2]) + cell_grid
-        
+
         ### adjust w and h
         pred_box_wh = tf.exp(y_pred[..., 2:4]) * np.reshape(self.anchors, [1,1,1,self.nb_box,2])
-        
+
         ### adjust confidence
         pred_box_conf = tf.sigmoid(y_pred[..., 4])
-        
+
         ### adjust class probabilities
         pred_box_class = y_pred[..., 5:]
-        
+
         """
         Adjust ground truth
         """
         ### adjust x and y
         true_box_xy = y_true[..., 0:2] # relative position to the containing cell
-        
+
         ### adjust w and h
         true_box_wh = y_true[..., 2:4] # number of cells accross, horizontally and vertically
-        
+
         ### adjust confidence
         true_wh_half = true_box_wh / 2.
         true_mins    = true_box_xy - true_wh_half
         true_maxes   = true_box_xy + true_wh_half
-        
+
         pred_wh_half = pred_box_wh / 2.
         pred_mins    = pred_box_xy - pred_wh_half
-        pred_maxes   = pred_box_xy + pred_wh_half       
-        
+        pred_maxes   = pred_box_xy + pred_wh_half
+
         intersect_mins  = tf.maximum(pred_mins,  true_mins)
         intersect_maxes = tf.minimum(pred_maxes, true_maxes)
         intersect_wh    = tf.maximum(intersect_maxes - intersect_mins, 0.)
         intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
-        
+
         true_areas = true_box_wh[..., 0] * true_box_wh[..., 1]
         pred_areas = pred_box_wh[..., 0] * pred_box_wh[..., 1]
 
         union_areas = pred_areas + true_areas - intersect_areas
         iou_scores  = tf.truediv(intersect_areas, union_areas)
-        
+
         true_box_conf = iou_scores * y_true[..., 4]
-        
+
         ### adjust class probabilities
         true_box_class = tf.argmax(y_true[..., 5:], -1)
-        
+
         """
         Determine the masks
         """
         ### coordinate mask: simply the position of the ground truth boxes (the predictors)
         coord_mask = tf.expand_dims(y_true[..., 4], axis=-1) * self.coord_scale
-        
+
         ### confidence mask: penelize predictors + penalize boxes with low IOU
         # penalize the confidence of the boxes, which have IOU with some ground truth box < 0.6
         true_xy = self.true_boxes[..., 0:2]
         true_wh = self.true_boxes[..., 2:4]
-        
+
         true_wh_half = true_wh / 2.
         true_mins    = true_xy - true_wh_half
         true_maxes   = true_xy + true_wh_half
-        
+
         pred_xy = tf.expand_dims(pred_box_xy, 4)
         pred_wh = tf.expand_dims(pred_box_wh, 4)
-        
+
         pred_wh_half = pred_wh / 2.
         pred_mins    = pred_xy - pred_wh_half
-        pred_maxes   = pred_xy + pred_wh_half    
-        
+        pred_maxes   = pred_xy + pred_wh_half
+
         intersect_mins  = tf.maximum(pred_mins,  true_mins)
         intersect_maxes = tf.minimum(pred_maxes, true_maxes)
         intersect_wh    = tf.maximum(intersect_maxes - intersect_mins, 0.)
         intersect_areas = intersect_wh[..., 0] * intersect_wh[..., 1]
-        
+
         true_areas = true_wh[..., 0] * true_wh[..., 1]
         pred_areas = pred_wh[..., 0] * pred_wh[..., 1]
 
@@ -192,36 +192,36 @@ class YOLO(object):
 
         best_ious = tf.reduce_max(iou_scores, axis=4)
         conf_mask = conf_mask + tf.cast(best_ious < 0.6, dtype=tf.float32) * (1 - y_true[..., 4]) * self.no_object_scale
-        
+
         # penalize the confidence of the boxes, which are reponsible for corresponding ground truth box
         conf_mask = conf_mask + y_true[..., 4] * self.object_scale
-        
+
         ### class mask: simply the position of the ground truth boxes (the predictors)
-        class_mask = y_true[..., 4] * tf.gather(self.class_wt, true_box_class) * self.class_scale       
-        
+        class_mask = y_true[..., 4] * tf.gather(self.class_wt, true_box_class) * self.class_scale
+
         """
         Warm-up training
         """
         no_boxes_mask = tf.cast(coord_mask < self.coord_scale/2., dtype=tf.float32)
         seen = tf.assign_add(seen, 1.)
-        
-        true_box_xy, true_box_wh, coord_mask = tf.cond(tf.less(seen, self.warmup_batches+1), 
-                              lambda: [true_box_xy + (0.5 + cell_grid) * no_boxes_mask, 
+
+        true_box_xy, true_box_wh, coord_mask = tf.cond(tf.less(seen, self.warmup_batches+1),
+                              lambda: [true_box_xy + (0.5 + cell_grid) * no_boxes_mask,
                                        true_box_wh + tf.ones_like(true_box_wh) * \
                                        np.reshape(self.anchors, [1,1,1,self.nb_box,2]) * \
-                                       no_boxes_mask, 
+                                       no_boxes_mask,
                                        tf.ones_like(coord_mask)],
-                              lambda: [true_box_xy, 
+                              lambda: [true_box_xy,
                                        true_box_wh,
                                        coord_mask])
-        
+
         """
         Finalize the loss
         """
         nb_coord_box = tf.reduce_sum(tf.cast(coord_mask > 0.0, dtype=tf.float32))
         nb_conf_box  = tf.reduce_sum(tf.cast(conf_mask  > 0.0, dtype=tf.float32))
         nb_class_box = tf.reduce_sum(tf.cast(class_mask > 0.0, dtype=tf.float32))
-       
+
         batch_size = tf.cast(tf.shape(y_true)[0], dtype=tf.float32)
 
         loss_xy    = tf.reduce_sum(tf.square(true_box_xy-pred_box_xy)     * coord_mask) / batch_size
@@ -229,27 +229,27 @@ class YOLO(object):
         loss_conf  = tf.reduce_sum(tf.square(true_box_conf-pred_box_conf) * conf_mask)  / batch_size
         loss_class = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=true_box_class, logits=pred_box_class)
         loss_class = tf.reduce_sum(loss_class * class_mask) / batch_size
-       
-        warmup_xy = loss_xy / (nb_coord_box + 1e-6) / 2. 
+
+        warmup_xy = loss_xy / (nb_coord_box + 1e-6) / 2.
         warmup_wh = loss_wh / (nb_coord_box  + 1e-6) / 2.
-        warmup_conf = loss_conf / (nb_conf_box + 1e-6) / 2.   
+        warmup_conf = loss_conf / (nb_conf_box + 1e-6) / 2.
         warmup_class = loss_class / (nb_class_box + 1e-6)
-    
+
         # Full tensor, tensor with predicted xy, wh and groundtruth box classes
         class_tensor = tf.expand_dims(tf.cast(true_box_class, dtype=tf.float32), axis=-1)
         full_tensor = tf.concat([pred_box_xy, pred_box_wh, class_tensor], axis=-1)
         bin_mask = y_true[..., 4]
-        
-        loss = tf.cond(tf.less(seen, self.warmup_batches+1), 
-                      lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 10,
-                      lambda: loss_xy + loss_wh + loss_conf + loss_class) 
-               
+
+        loss = tf.cond(tf.less(seen, self.warmup_batches+1),
+                      lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30,
+                      lambda: loss_xy + loss_wh + loss_conf + loss_class)
+
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
             nb_pred_box = tf.reduce_sum(tf.cast(true_box_conf > 0.5, dtype=tf.float32) * tf.cast(pred_box_conf > 0.3, dtype=tf.float32))
-            
+
 #             current_recall = nb_pred_box/(nb_true_box + 1e-6)
-#             total_recall = tf.assign_add(total_recall, current_recall) 
+#             total_recall = tf.assign_add(total_recall, current_recall)
 
 #             loss = tf.Print(loss, [nb_true_box, nb_pred_box], message='True boxes / Pred boxes', summarize=10)
 
@@ -260,10 +260,10 @@ class YOLO(object):
 #             loss = tf.Print(loss, [loss], message='Total Loss \t', summarize=1000)
 #             loss = tf.Print(loss, [current_recall], message='Current Recall \t', summarize=1000)
 #             loss = tf.Print(loss, [total_recall/seen], message='Average Recall \t', summarize=1000)
-        
+
         return loss
 
-     
+
     def load_weights(self, weight_path):
         self.model.load_weights(weight_path)
 
@@ -280,7 +280,7 @@ class YOLO(object):
                     coord_scale,
                     class_scale,
                     saved_weights_name='best_weights.h5',
-                    debug=False):     
+                    debug=False):
 
         self.batch_size = batch_size
 
@@ -296,9 +296,9 @@ class YOLO(object):
         ############################################
 
         generator_config = {
-            'IMAGE_H'         : self.input_size, 
+            'IMAGE_H'         : self.input_size,
             'IMAGE_W'         : self.input_size,
-            'GRID_H'          : self.grid_h,  
+            'GRID_H'          : self.grid_h,
             'GRID_W'          : self.grid_w,
             'BOX'             : self.nb_box,
             'LABELS'          : self.labels,
@@ -306,17 +306,17 @@ class YOLO(object):
             'ANCHORS'         : self.anchors,
             'BATCH_SIZE'      : self.batch_size,
             'TRUE_BOX_BUFFER' : self.max_box_per_image,
-        }    
+        }
 
-        train_generator = BatchGenerator(train_imgs, 
-                                     generator_config, 
+        train_generator = BatchGenerator(train_imgs,
+                                     generator_config,
                                      norm=self.feature_extractor.normalize)
-        valid_generator = BatchGenerator(valid_imgs, 
-                                     generator_config, 
+        valid_generator = BatchGenerator(valid_imgs,
+                                     generator_config,
                                      norm=self.feature_extractor.normalize,
-                                     jitter=False)   
-                                     
-        self.warmup_batches  = warmup_epochs * (train_times*len(train_generator) + valid_times*len(valid_generator))   
+                                     jitter=False)
+
+        self.warmup_batches  = warmup_epochs * (train_times*len(train_generator) + valid_times*len(valid_generator))
 
         ############################################
         # Compile the model
@@ -331,21 +331,21 @@ class YOLO(object):
         # Make a few callbacks
         ############################################
 
-        #early_stop = EarlyStopping(monitor='val_loss', 
-                           #min_delta=0.001, 
-                           #patience=3, 
-                           #mode='min', 
+        #early_stop = EarlyStopping(monitor='val_loss',
+                           #min_delta=0.001,
+                           #patience=3,
+                           #mode='min',
                            #verbose=1)
-        checkpoint = ModelCheckpoint(saved_weights_name, 
-                                     monitor='val_loss', 
-                                     verbose=1, 
-                                     save_best_only=True, 
-                                     mode='min', 
+        checkpoint = ModelCheckpoint(saved_weights_name,
+                                     monitor='val_loss',
+                                     verbose=1,
+                                     save_best_only=True,
+                                     mode='min',
                                      period=1)
-        tensorboard = TensorBoard(log_dir=os.path.expanduser('~/logs/'), 
-                                  histogram_freq=0, 
+        tensorboard = TensorBoard(log_dir=os.path.expanduser('~/logs/'),
+                                  histogram_freq=0,
                                   #write_batch_performance=True,
-                                  write_graph=True, 
+                                  write_graph=True,
                                   write_images=False)
 
         def schedule_lr(x):
@@ -354,35 +354,35 @@ class YOLO(object):
             if x >= 60:
                 return 1e-4
             return 0.5e-3
-        
+
         lr_scheduler = LearningRateScheduler(schedule_lr)
         ############################################
         # Start the training process
-        ############################################        
+        ############################################
 
-        self.model.fit_generator(generator        = train_generator, 
-                                 steps_per_epoch  = len(train_generator) * train_times, 
-                                 epochs           = warmup_epochs + nb_epochs, 
+        self.model.fit_generator(generator        = train_generator,
+                                 steps_per_epoch  = len(train_generator) * train_times,
+                                 epochs           = warmup_epochs + nb_epochs,
                                  verbose          = 2 if debug else 1,
                                  validation_data  = valid_generator,
                                  validation_steps = len(valid_generator) * valid_times,
-                                 callbacks        = [#early_stop, 
-                                                     checkpoint, tensorboard, lr_scheduler], 
+                                 callbacks        = [#early_stop,
+                                                     checkpoint, tensorboard, lr_scheduler],
                                  workers          = 3,
-                                 max_queue_size   = 8)      
+                                 max_queue_size   = 8)
 
         ############################################
         # Compute mAP on the validation set
         ############################################
-        average_precisions = self.evaluate(valid_generator)     
+        average_precisions = self.evaluate(valid_generator)
 
         # print evaluation
         for label, average_precision in average_precisions.items():
             print(self.labels[label], '{:.4f}'.format(average_precision))
-        print('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))         
+        print('mAP: {:.4f}'.format(sum(average_precisions.values()) / len(average_precisions)))
 
-    def evaluate(self, 
-                 generator, 
+    def evaluate(self,
+                 generator,
                  iou_threshold=0.3,
                  score_threshold=0.3,
                  max_detections=100,
@@ -399,7 +399,7 @@ class YOLO(object):
             save_path       : The path to save images with visualized detections to.
         # Returns
             A dict mapping class names to mAP scores.
-        """    
+        """
         # gather all detections and annotations
         all_detections     = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
         all_annotations    = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
@@ -411,33 +411,33 @@ class YOLO(object):
             # make the boxes and the labels
             pred_boxes  = self.predict(raw_image)
 
-            
+
             score = np.array([box.score for box in pred_boxes])
-            pred_labels = np.array([box.label for box in pred_boxes])        
-            
+            pred_labels = np.array([box.label for box in pred_boxes])
+
             if len(pred_boxes) > 0:
                 pred_boxes = np.array([[box.xmin*raw_width, box.ymin*raw_height, box.xmax*raw_width, box.ymax*raw_height, box.score] for box in pred_boxes])
             else:
-                pred_boxes = np.array([[]])  
-            
+                pred_boxes = np.array([[]])
+
             # sort the boxes and the labels according to scores
             score_sort = np.argsort(-score)
             pred_labels = pred_labels[score_sort]
             pred_boxes  = pred_boxes[score_sort]
-            
+
             # copy detections to all_detections
             for label in range(generator.num_classes()):
                 all_detections[i][label] = pred_boxes[pred_labels == label, :]
-                
+
             annotations = generator.load_annotation(i)
-            
+
             # copy detections to all_annotations
             for label in range(generator.num_classes()):
                 all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
-                
+
         # compute mAP by comparing all detections and all annotations
         average_precisions = {}
-        
+
         for label in range(generator.num_classes()):
             false_positives = np.zeros((0,))
             true_positives  = np.zeros((0,))
@@ -489,10 +489,10 @@ class YOLO(object):
             precision = true_positives / np.maximum(true_positives + false_positives, np.finfo(np.float64).eps)
 
             # compute average precision
-            average_precision  = compute_ap(recall, precision)  
+            average_precision  = compute_ap(recall, precision)
             average_precisions[label] = average_precision
 
-        return average_precisions    
+        return average_precisions
 
     def predict(self, image):
         self.max_box_per_image = 2

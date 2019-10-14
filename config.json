@@ -3,20 +3,20 @@
         "backend":              "Full Yolo",
         "input_size":           416,
         "anchors":              [0.57273, 0.677385, 1.87446, 2.06253, 3.33843, 5.47434, 7.88282, 3.52778, 9.77052, 9.16828],
-        "max_box_per_image":    2,        
+        "max_box_per_image":    2,
         "labels":               ["PZ", "Prostate"]
     },
 
     "train": {
         "train_image_folder":   "/home/user/data/train/image/",
-        "train_annot_folder":   "/home/user/data/train/annotation/",   
-          
+        "train_annot_folder":   "/home/user/data/train/annotation/",
+
         "train_times":          1,
         "pretrained_weights":   "I_dont_want_pretrained_weights",
         "batch_size":           16,
         "learning_rate":        1e-3,
         "nb_epochs":            150,
-        "warmup_epochs":        15,
+        "warmup_epochs":        5,
 
         "object_scale":         10.0,
         "no_object_scale":      0.1,
