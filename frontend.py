@@ -249,6 +249,9 @@ class YOLO(object):
                       lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30 + anatomical_loss,
                       lambda: loss_xy + loss_wh + loss_conf + loss_class + anatomical_loss)
 
+        loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
+        loss = tf.Print(loss, [anatomical_loss], message='Loss Anatomical \t', summarize=1000)
+
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
             nb_pred_box = tf.reduce_sum(tf.cast(true_box_conf > 0.5, dtype=tf.float32) * tf.cast(pred_box_conf > 0.3, dtype=tf.float32))
