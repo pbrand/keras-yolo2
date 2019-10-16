@@ -239,15 +239,15 @@ class YOLO(object):
         class_tensor = tf.expand_dims(tf.cast(true_box_class, dtype=tf.float32), axis=-1)
         full_tensor = tf.concat([pred_box_xy, pred_box_wh, class_tensor], axis=-1)
         bin_mask = y_true[..., 4]
-        annotation_loss = tf.map_fn(fn=lambda x: self.anatomical_loss(full_tensor, bin_mask, x),
+        anatomical_loss = tf.map_fn(fn=lambda x: self.anatomical_loss(full_tensor, bin_mask, x),
                             elems=tf.range(tf.shape(full_tensor)[0]),
                             infer_shape=False,
                             dtype=tf.float32, name='Analytical_Loss_per_batch')
-        annotation_loss = tf.reduce_sum(annotation_loss) / (nb_coord_box + 1e-6) / 2.
+        anatomical_loss = tf.reduce_sum(anatomical_loss) / (nb_coord_box + 1e-6) / 2.
 
         loss = tf.cond(tf.less(seen, self.warmup_batches+1),
-                      lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30 + annotation_loss,
-                      lambda: loss_xy + loss_wh + loss_conf + loss_class + annotation_loss)
+                      lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30 + anatomical_loss,
+                      lambda: loss_xy + loss_wh + loss_conf + loss_class + anatomical_loss)
 
         if self.debug:
             nb_true_box = tf.reduce_sum(y_true[..., 4])
@@ -285,7 +285,7 @@ class YOLO(object):
 
             pz_y_min = pz[1] - (pz[3] / 2)
             prostate_y_min = prostate[1] - (prostate[3] / 2)
-            y_min_loss = tf.reduce_sum(tf.square(pz_y_min, prostate_y_min))
+            y_min_loss = tf.reduce_sum(tf.square(pz_y_min - prostate_y_min))
             anatomical_loss = tf.cond(tf.less(pz_y_min, prostate_y_min),
                               lambda: tf.add(anatomical_loss, y_min_loss),
                               lambda: anatomical_loss,
