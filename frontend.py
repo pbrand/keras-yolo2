@@ -243,7 +243,7 @@ class YOLO(object):
                             elems=tf.range(tf.shape(full_tensor)[0]),
                             infer_shape=False,
                             dtype=tf.float32, name='Analytical_Loss_per_batch')
-        anatomical_loss = tf.reduce_sum(anatomical_loss * 10.0) / (nb_coord_box + 1e-6) / 2. # Hardcoded weight of 10.0 for anatomical loss
+        anatomical_loss = tf.reduce_sum(anatomical_loss * 10.0) / (2 * self.input_size[0]) # Hardcoded weight of 10.0 for anatomical loss
 
         loss = tf.cond(tf.less(seen, self.warmup_batches+1),
                       lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30 + anatomical_loss,
