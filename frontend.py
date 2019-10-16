@@ -243,7 +243,7 @@ class YOLO(object):
                             elems=tf.range(tf.shape(full_tensor)[0]),
                             infer_shape=False,
                             dtype=tf.float32, name='Analytical_Loss_per_batch')
-        anatomical_loss = tf.reduce_sum(anatomical_loss) / (nb_coord_box + 1e-6) / 2.
+        anatomical_loss = tf.reduce_sum(anatomical_loss * 10.0) / (nb_coord_box + 1e-6) / 2. # Hardcoded weight of 10.0 for anatomical loss
 
         loss = tf.cond(tf.less(seen, self.warmup_batches+1),
                       lambda: warmup_xy + warmup_wh + warmup_conf + warmup_class + 30 + anatomical_loss,
@@ -259,7 +259,8 @@ class YOLO(object):
 #             loss = tf.Print(loss, [nb_true_box, nb_pred_box], message='True boxes / Pred boxes', summarize=10)
 
 #             loss = tf.Print(loss, [loss_xy], message='Loss XY \t', summarize=1000)
-#             loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
+            loss = tf.Print(loss, [loss_wh], message='Loss WH \t', summarize=1000)
+            loss = tf.Print(loss, [anatomical_loss], message='Loss Anatomical \t', summarize=1000)
 #             loss = tf.Print(loss, [loss_conf], message='Loss Conf \t', summarize=1000)
 #             loss = tf.Print(loss, [loss_class], message='Loss Class \t', summarize=1000)
 #             loss = tf.Print(loss, [loss], message='Total Loss \t', summarize=1000)
