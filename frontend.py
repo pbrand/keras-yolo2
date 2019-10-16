@@ -293,7 +293,7 @@ class YOLO(object):
 
             pz_x_min = pz[0] - (pz[2] / 2)
             prostate_x_min = prostate[0] - (prostate[2] / 2)
-            x_min_loss = tf.reduce_sum(tf.square(pz_x_min, prostate_x_min))
+            x_min_loss = tf.reduce_sum(tf.square(pz_x_min - prostate_x_min))
             # anatomical_loss = tf.cond(tf.less(pz_x_min, prostate_x_min),
             #                   lambda: tf.add(anatomical_loss, x_min_loss),
             #                   lambda: anatomical_loss,
@@ -302,7 +302,7 @@ class YOLO(object):
 
             pz_x_max = pz[0] + (pz[2] / 2)
             prostate_x_max = prostate[0] + (prostate[2] / 2)
-            x_max_loss =  tf.reduce_sum(tf.square(pz_x_max, prostate_x_max))
+            x_max_loss =  tf.reduce_sum(tf.square(pz_x_max - prostate_x_max))
 #             anatomical_loss = tf.cond(tf.greater(pz_x_max, prostate_x_max),
 #                               lambda: tf.add(anatomical_loss, x_max_loss),
 #                               lambda: anatomical_loss,
