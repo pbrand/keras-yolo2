@@ -566,6 +566,136 @@ class YOLO(object):
 
         return average_precisions
 
+    def calc_border_distance(self,
+                 generator,
+                 iou_threshold=0.3,
+                 score_threshold=0.3,
+                 max_detections=100,
+                 save_path=None):
+        """ Evaluate border distance on a given dataset using a given model.
+        code originally from https://github.com/fizyr/keras-retinanet
+
+        # Arguments
+            generator       : The generator that represents the dataset to evaluate.
+            model           : The model to evaluate.
+            iou_threshold   : The threshold used to consider when a detection is positive or negative.
+            score_threshold : The score confidence threshold to use for detections.
+            max_detections  : The maximum number of detections to use per image.
+            save_path       : The path to save images with visualized detections to.
+        # Returns
+            A dict mapping class names to mAP scores.
+        """
+        # gather all detections and annotations
+        all_detections     = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
+        all_annotations    = [[None for i in range(generator.num_classes())] for j in range(generator.size())]
+
+        abs_distances   = np.zeros((0,4))
+        a = 0
+        for i in range(generator.size()):
+            raw_image = generator.load_image(i)
+            raw_height, raw_width, raw_channels = raw_image.shape
+
+            # make the boxes and the labels
+            pred_boxes  = self.predict(raw_image)
+
+            score = np.array([box.score for box in pred_boxes])
+            pred_labels = np.array([box.label for box in pred_boxes])
+
+            if len(pred_boxes) == 2:
+                annotations = generator.load_annotation(i)
+                pred_boxes = np.array([[box.xmin*raw_width, box.ymin*raw_height, box.xmax*raw_width, box.ymax*raw_height, box.score] for box in pred_boxes])
+                pred_boxes = np.concatenate((pred_boxes, np.expand_dims(pred_labels.astype(np.float32), axis=-1)), axis=-1)
+                print(a)
+                a += 1
+                ann_boxes = np.array(annotations)
+                pred_abs_distances = np.abs(pred_boxes[0,0:4] - pred_boxes[1,0:4])
+                true_abs_distances = np.abs(ann_boxes[0,0:4] - ann_boxes[1,0:4])
+                error_abs_distances = np.abs(pred_abs_distances - true_abs_distances)
+                abs_distances = np.vstack((abs_distances, error_abs_distances))
+            #else:
+            #    pred_boxes = np.array([[]])
+
+
+#            print(pred_boxes.shape,'\t\t', pred_labels.shape)
+#            print('Sample: ', i)
+#            print('\t\tpredicted_boxes: \n', pred_boxes)
+#            print('\t\ttrue_boxes: \n', annotations)
+            
+#            # sort the boxes and the labels according to scores
+#            score_sort = np.argsort(-score)
+#            pred_labels = pred_labels[score_sort]
+#            pred_boxes  = pred_boxes[score_sort]
+#
+#            # copy detections to all_detections
+#            for label in range(generator.num_classes()):
+#                all_detections[i][label] = pred_boxes[pred_labels == label, :]
+#
+#            annotations = generator.load_annotation(i)
+#
+#            # copy detections to all_annotations
+#            for label in range(generator.num_classes()):
+#                all_annotations[i][label] = annotations[annotations[:, 4] == label, :4].copy()
+#
+#        # compute mAP by comparing all detections and all annotations
+#        average_precisions = {}
+#        metrics = {}
+#
+#        #for label in range(generator.num_classes()):
+#        false_positives = np.zeros((0,))
+#        true_positives  = np.zeros((0,))
+#        scores          = np.zeros((0,))
+#        num_annotations = 0.0
+#        abs_distances   = np.zeros((0,4))
+#
+#        # For each sample: calculate the absolute distance between the 
+#        # predicted prostate boundary and PZ for all 4 boundaries.
+#        # Do the same for the annotated prostate boundary and PZ for all 4 boundaries
+#        # Per boundary, calculate the absoulte error between annotation and prediction.
+#        for i in range(generator.size()):
+#            detections           = np.array(all_detections[i]) #[label]
+#            annotations          = np.array(all_annotations[i]) #[label]
+#            num_annotations     += np.array(annotations).shape[0]
+#            detected_annotations = []
+#            
+#            if len(detections.shape) == 3 and detections.shape[-1] == 5:
+#                #print("DEBUG VALUES:\n detections:",detections.shape, "\n annotations:", annotations.shape)
+#                pred_abs_distances = np.abs(detections[0,0,0:4] - detections[1,0,0:4])
+#                true_abs_distances = np.abs(annotations[0,0,0:4] - annotations[1,0,0:4])
+#                error_abs_distances = np.abs(pred_abs_distances - true_abs_distances)
+#                #print("DEBUG VALUES:\n", pred_abs_distances.shape, "\n", true_abs_distances.shape)
+#                abs_distances = np.vstack((abs_distances, error_abs_distances))
+            # for d in detections:
+            #     scores = np.append(scores, d[4])
+
+            #     if annotations.shape[0] == 0:
+            #         false_positives = np.append(false_positives, 1)
+            #         true_positives  = np.append(true_positives, 0)
+            #         continue
+
+            #     overlaps            = compute_overlap(np.expand_dims(d, axis=0), annotations)
+            #     assigned_annotation = np.argmax(overlaps, axis=1)
+            #     max_overlap         = overlaps[0, assigned_annotation]
+
+            #     if max_overlap >= iou_threshold and assigned_annotation not in detected_annotations:
+            #         false_positives = np.append(false_positives, 0)
+            #         true_positives  = np.append(true_positives, 1)
+            #         detected_annotations.append(assigned_annotation)
+
+            #         abs_distance = np.abs(d[0:4] - annotations[assigned_annotation][0:4])
+            #         abs_distances = np.vstack((abs_distances, abs_distance))
+            #     else:
+            #         false_positives = np.append(false_positives, 1)
+            #         true_positives  = np.append(true_positives, 0)
+
+        # no annotations -> AP for this class is 0 (is this correct?)
+        #if num_annotations == 0:
+        #    average_precisions[label] = 0
+        #    continue
+        #metrics[label] = {'abs_distance': abs_distances, 'FPs': false_positives}
+
+        return abs_distances#metrics
+
+
     def predict(self, image):
         self.max_box_per_image = 2
         image_h, image_w, _ = image.shape

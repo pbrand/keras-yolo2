@@ -106,7 +106,7 @@ def _main_(args):
     iou_range = np.arange(0.5, 1.0, 0.05)
     
     results = pd.DataFrame(iou_range, columns=['IoU_threshold'])
-    
+        
     for iou_threshold in iou_range:
         current_results = yolo.evaluate(test_generator, 
                                         iou_threshold=iou_threshold,
@@ -123,9 +123,24 @@ def _main_(args):
     results['PZ_AP'] = PZ_AP
     results['Prostate_AP'] = Prostate_AP
     results['mAP'] = mAP
-    
-    csv_output_path = os.path.join(config['train']['saved_weights_name'].rsplit(os.sep, 2)[0], 'results', 'quantitative_results05.csv')
+
+    # Absolute distance metrics
+    abs_diff_results = yolo.calc_border_distance(test_generator,
+                                                 iou_threshold=0.5,
+                                                 score_threshold=0.3,
+                                                 max_detections=2)
+    #results['PZ_abs_diff'] = abs_diff_results[0]['abs_distance']
+    #results['PZ_FPs'] = abs_diff_results[0]['FPs']
+    #results['Prostate_abs_diff'] = abs_diff_results[1]['abs_distance']
+    #results['Prostate_FPs'] = abs_diff_results[1]['FPs']
+    border_error = pd.DataFrame(abs_diff_results, columns=['left', 'top', 'right', 'bottom'])
+
+    csv_output_path = os.path.join(config['train']['saved_weights_name'].rsplit(os.sep, 2)[0], 'quantitative_results.csv')
     results.to_csv(csv_output_path, index=False)
+    csv_output_path = os.path.join(config['train']['saved_weights_name'].rsplit(os.sep, 2)[0], 'border_error_results.csv')
+    print('Error distance results: ', abs_diff_results.shape)
+    print(csv_output_path)
+    border_error.to_csv(csv_output_path, index=False)
 
 
 if __name__ == '__main__':
